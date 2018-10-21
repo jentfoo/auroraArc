@@ -262,7 +262,7 @@ public abstract class AbstractDelegatingConnection implements Connection {
     protected final int resultSetType;
     protected final int resultSetConcurrency;
     protected final int resultSetHoldability;
-    private ST delegateStatement = null;
+    private volatile ST delegateStatement = null;
     private List<SQLOperation<ST, Void>> queuedStatementActions = null;
     
     public AbstractDelegatingStatement() throws SQLException {
@@ -286,33 +286,39 @@ public abstract class AbstractDelegatingConnection implements Connection {
     
     // used whenever there is a result needed
     protected ST delegate() throws SQLException {
-      synchronized (this) { // TODO - improve performance
-        if (delegateStatement == null) {
-          delegateStatement = processOnDelegate(delegateStatementProvider());
-          if (queuedStatementActions != null) {
-            for (SQLOperation<ST, Void> o : queuedStatementActions) {
-              o.run(delegateStatement);
+      ST result = delegateStatement;
+      if (result == null) {
+        synchronized (this) {
+          if ((result = delegateStatement) == null) {
+            result = delegateStatement = processOnDelegate(delegateStatementProvider());
+            if (queuedStatementActions != null) {
+              for (SQLOperation<ST, Void> o : queuedStatementActions) {
+                o.run(result);
+              }
+              queuedStatementActions = null;
             }
-            queuedStatementActions = null;
           }
         }
       }
       
-      return delegateStatement;
+      return result;
     }
 
     // used when there is no result, and thus the action may be delayed
     protected void action(SQLOperation<ST, Void> action) throws SQLException {
-      synchronized (this) { // TODO - improve performance
-        if (delegateStatement == null) {
-          if (queuedStatementActions == null) {
-            queuedStatementActions = new ArrayList<>(2);
+      ST ds = this.delegateStatement;
+      if (ds == null) {
+        synchronized (this) {
+          if ((ds = this.delegateStatement) == null) {
+            if (queuedStatementActions == null) {
+              queuedStatementActions = new ArrayList<>(2);
+            }
+            queuedStatementActions.add(action);
+            return;
           }
-          queuedStatementActions.add(action);
-        } else {
-          action.run(delegateStatement);
         }
       }
+      action.run(ds);
     }
 
     @Override
