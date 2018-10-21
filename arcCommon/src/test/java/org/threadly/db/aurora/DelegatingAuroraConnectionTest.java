@@ -148,7 +148,7 @@ public class DelegatingAuroraConnectionTest {
     auroraConnection.setAutoCommit(false);
     assertFalse(auroraConnection.getAutoCommit());
     
-    verify(auroraConnection.getDelegate().getRight().verifiedState()).setAutoCommit(false);
+    verify(auroraConnection.connectionForServer(auroraConnection.getDelegate()).verifiedState()).setAutoCommit(false);
   }
   
   @Test
@@ -158,7 +158,7 @@ public class DelegatingAuroraConnectionTest {
     auroraConnection.setReadOnly(false);
     assertFalse(auroraConnection.isReadOnly());
     
-    verify(auroraConnection.getDelegate().getRight().verifiedState()).setReadOnly(false);
+    verify(auroraConnection.connectionForServer(auroraConnection.getDelegate()).verifiedState()).setReadOnly(false);
   }
   
   @Test

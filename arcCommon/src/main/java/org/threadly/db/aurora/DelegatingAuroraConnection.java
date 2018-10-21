@@ -122,6 +122,7 @@ public class DelegatingAuroraConnection extends AbstractDelegatingConnection imp
     stickyConnection = null;
   }
 
+  @Override
   protected void resetStickyConnection() {
     stickyConnection = null;
   }
@@ -173,56 +174,74 @@ public class DelegatingAuroraConnection extends AbstractDelegatingConnection imp
   public boolean isReadOnly() {
     return connectionStateManager.isReadOnly();
   }
+  
+  protected ConnectionHolder connectionForServer(AuroraServer server) {
+    ConnectionHolder ch = null;
+    // server should be guaranteed to be in map
+    for (int i = 0; i < servers.length; i++) {
+      if (servers[i].equals(server)) {
+        ch = connections[i];
+        break;
+      }
+    }
+    if (ch == null) {
+      throw new IllegalStateException("Cluster monitor provided unknown server");
+    }
+    return ch;
+  }
 
-  @Override
-  protected <R> R processOnDelegate(SQLOperation<Connection, R> action) throws SQLException {
-    Pair<AuroraServer, ConnectionHolder> p = getDelegate();
+  protected <R> R processOnDelegate(AuroraServer server, ConnectionHolder connection, 
+                                    SQLOperation<Connection, R> action) throws SQLException {
     try {
-      return action.run(p.getRight().verifiedState());
+      return action.run(connection.verifiedState());
     } catch (SQLException e) {
-      clusterMonitor.expediteServerCheck(p.getLeft());
+      clusterMonitor.expediteServerCheck(server);
       throw e;
     }
   }
 
-  protected Pair<AuroraServer, ConnectionHolder> getDelegate() throws SQLException {
-    // TODO - optimize without a lock, concern is non-auto commit in parallel returning two
-    //        different connections.  In addition we use the `this` lock when setting the auto
-    //        commit to `true` (ensuring the sticky connection is only cleared in a safe way)
-    synchronized (this) {
-      if (stickyConnection != null) {
-        // at a point that state must be preserved
-        return stickyConnection;
-      }
-
+  @Override
+  protected <R> R processOnDelegate(SQLOperation<Connection, R> action) throws SQLException {
+    if (connectionStateManager.isAutoCommit()) { // optimized non-locking path
+      AuroraServer server = getDelegate();
+      return processOnDelegate(server, connectionForServer(server), action);
+    } else {
       AuroraServer server;
-      if (connectionStateManager.isReadOnly()) {
-        server = clusterMonitor.getRandomReadReplica();
-        if (server == null) {
-          server = clusterMonitor.getCurrentMaster();
-        }
-      } else {
-        server = clusterMonitor.getCurrentMaster();
-        if (server == null) {
-          // we will _try_ to use a read only replica, since no master exists, lets hope this is a read
-          server = clusterMonitor.getRandomReadReplica();
-        }
-      }
-      if (server == null) {
-        throw new SQLException("No healthy servers");
-      }
-      // server should be guaranteed to be in map
-      for (int i = 0; i < servers.length; i++) {
-        if (servers[i].equals(server)) {
-          Pair<AuroraServer, ConnectionHolder> result = new Pair<>(server, connections[i]);
-          if (! connectionStateManager.isAutoCommit()) {
-            stickyConnection = result;
+      ConnectionHolder ch;
+      synchronized (this) { // must lock to ensure the stickyConnection state is managed atomically
+        if (stickyConnection != null) { // at a point that state must be preserved
+          server = stickyConnection.getLeft();
+          ch = stickyConnection.getRight();
+        } else {
+          server = getDelegate();
+          ch = connectionForServer(server);
+          if (! connectionStateManager.isAutoCommit()) { // verify auto commit did not change before locked
+            stickyConnection = new Pair<>(server, ch);
           }
-          return result;
         }
       }
-      throw new IllegalStateException("Cluster monitor provided unknown server");
+      return processOnDelegate(server, ch, action);
     }
+  }
+  
+  protected AuroraServer getDelegate() throws SQLException {
+    AuroraServer server;
+    if (connectionStateManager.isReadOnly()) {
+      server = clusterMonitor.getRandomReadReplica();
+      if (server == null) {
+        server = clusterMonitor.getCurrentMaster();
+      }
+    } else {
+      server = clusterMonitor.getCurrentMaster();
+      if (server == null) {
+        // we will _try_ to use a read only replica, since no master exists, lets hope this is a read
+        server = clusterMonitor.getRandomReadReplica();
+      }
+    }
+    if (server == null) {
+      throw new SQLException("No healthy servers");
+    }
+    return server;
   }
 
   @Override
