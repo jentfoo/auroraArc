@@ -195,7 +195,7 @@ public class DriverLocalDbLoadTest {
         c.setReadOnly(readOnly);
         DelegatingAuroraConnection dac = (DelegatingAuroraConnection)c;
         for (int i = 0; i < RUN_COUNT_REFERENCE * 200_000; i++) {
-          dac.getDelegate();
+          dac.connectionForServer(dac.getDelegate());
           dac.resetStickyConnection();
         }
       }
